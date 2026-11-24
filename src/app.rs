@@ -22,6 +22,12 @@ pub enum AppMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+pub enum EditField {
+    Key,
+    Value,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ConfirmAction {
     DeleteVar,
     #[allow(dead_code)]
@@ -46,6 +52,10 @@ pub struct App {
     // Editing state
     pub edit_buffer: String,
     pub edit_cursor: usize,
+    /// Which field `edit_buffer` currently holds.
+    pub edit_field: EditField,
+    /// Pending text of the field not being edited (key while editing value, and vice versa).
+    pub edit_other: String,
 
     // Search
     pub search_query: String,
@@ -85,6 +95,8 @@ impl App {
             var_scroll: 0,
             edit_buffer: String::new(),
             edit_cursor: 0,
+            edit_field: EditField::Value,
+            edit_other: String::new(),
             search_query: String::new(),
             search_matches: Vec::new(),
             search_match_index: 0,
@@ -178,31 +190,93 @@ impl App {
 
     // Editing
     pub fn start_edit(&mut self) {
-        if let Some(file) = self.current_file() {
-            if let Some(entry) = file.entries.get(self.var_index) {
-                self.edit_buffer = entry.value.clone();
-                self.edit_cursor = self.edit_buffer.chars().count();
-                self.mode = AppMode::Editing;
-            }
+        self.begin_edit(EditField::Value, false);
+    }
+
+    /// Enter edit mode on `field`. With `blank_key` the key buffer starts empty (new variable).
+    fn begin_edit(&mut self, field: EditField, blank_key: bool) {
+        let Some(entry) = self
+            .current_file()
+            .and_then(|f| f.entries.get(self.var_index))
+        else {
+            return;
+        };
+        let key = if blank_key {
+            String::new()
+        } else {
+            entry.key.clone()
+        };
+        let value = entry.value.clone();
+        (self.edit_buffer, self.edit_other) = match field {
+            EditField::Key => (key, value),
+            EditField::Value => (value, key),
+        };
+        self.edit_field = field;
+        self.edit_cursor = self.edit_buffer.chars().count();
+        self.mode = AppMode::Editing;
+    }
+
+    /// Toggle between editing the key and the value, keeping both pending texts.
+    pub fn switch_edit_field(&mut self) {
+        std::mem::swap(&mut self.edit_buffer, &mut self.edit_other);
+        self.edit_field = match self.edit_field {
+            EditField::Key => EditField::Value,
+            EditField::Value => EditField::Key,
+        };
+        self.edit_cursor = self.edit_buffer.chars().count();
+    }
+
+    /// Enter: on the key moves to the value, on the value confirms.
+    pub fn edit_enter(&mut self) {
+        match self.edit_field {
+            EditField::Key => self.switch_edit_field(),
+            EditField::Value => self.confirm_edit(),
         }
     }
 
     pub fn confirm_edit(&mut self) {
+        let (key, value) = match self.edit_field {
+            EditField::Key => (self.edit_buffer.clone(), self.edit_other.clone()),
+            EditField::Value => (self.edit_other.clone(), self.edit_buffer.clone()),
+        };
+        let key = key.trim().to_string();
+        if key.contains(|c: char| c.is_whitespace() || c == '=') {
+            self.set_status("Invalid key: no spaces or '='");
+            return;
+        }
         let idx = self.var_index;
-        let new_value = self.edit_buffer.clone();
-        if let Some(file) = self.env_files.get_mut(self.profile_index) {
-            if let Some(entry) = file.entries.get_mut(idx) {
-                entry.value = new_value;
-                self.dirty = true;
+        let duplicate = self.env_files.get(self.profile_index).is_some_and(|f| {
+            !key.is_empty()
+                && f.entries
+                    .iter()
+                    .enumerate()
+                    .any(|(i, e)| i != idx && e.key == key)
+        });
+        if duplicate {
+            self.set_status("Key already exists");
+            return;
+        }
+        if let Some(entry) = self
+            .env_files
+            .get_mut(self.profile_index)
+            .and_then(|f| f.entries.get_mut(idx))
+        {
+            // Empty key keeps the existing (placeholder) name.
+            if !key.is_empty() {
+                entry.key = key;
             }
+            entry.value = value;
+            self.dirty = true;
         }
         self.mode = AppMode::Normal;
-        self.set_status("Value updated (unsaved)");
+        self.edit_other.clear();
+        self.set_status("Variable updated (unsaved)");
     }
 
     pub fn cancel_edit(&mut self) {
         self.mode = AppMode::Normal;
         self.edit_buffer.clear();
+        self.edit_other.clear();
     }
 
     pub fn edit_insert(&mut self, c: char) {
@@ -414,7 +488,7 @@ impl App {
             file.entries.push(new_entry);
             self.var_index = file.entries.len() - 1;
             self.dirty = true;
-            self.start_edit();
+            self.begin_edit(EditField::Key, true);
         }
     }
 
@@ -737,6 +811,63 @@ mod tests {
         app.dirty = false;
         app.quit();
         assert!(!app.running);
+    }
+
+    #[test]
+    fn test_add_variable_starts_on_key_then_value() {
+        let mut app = make_app(0);
+        app.add_variable();
+        assert_eq!(app.mode, AppMode::Editing);
+        assert_eq!(app.edit_field, EditField::Key);
+        assert!(app.edit_buffer.is_empty());
+
+        for c in "MY_KEY".chars() {
+            app.edit_insert(c);
+        }
+        app.edit_enter();
+        assert_eq!(app.edit_field, EditField::Value);
+        assert_eq!(app.mode, AppMode::Editing);
+
+        for c in "abc".chars() {
+            app.edit_insert(c);
+        }
+        app.edit_enter();
+        assert_eq!(app.mode, AppMode::Normal);
+        let entry = &app.env_files[0].entries[0];
+        assert_eq!(entry.key, "MY_KEY");
+        assert_eq!(entry.value, "abc");
+    }
+
+    #[test]
+    fn test_switch_edit_field_keeps_both_texts() {
+        let mut app = make_app(1);
+        app.start_edit();
+        assert_eq!(app.edit_field, EditField::Value);
+        app.edit_insert('x');
+        app.switch_edit_field();
+        assert_eq!(app.edit_field, EditField::Key);
+        app.edit_insert('Z');
+        app.switch_edit_field();
+        app.edit_enter();
+        let entry = &app.env_files[0].entries[0];
+        assert!(entry.key.ends_with('Z'));
+        assert!(entry.value.ends_with('x'));
+    }
+
+    #[test]
+    fn test_confirm_edit_rejects_duplicate_key() {
+        let mut app = make_app(2);
+        let other = app.env_files[0].entries[1].key.clone();
+        app.var_index = 0;
+        app.start_edit();
+        app.switch_edit_field();
+        app.edit_buffer = other;
+        app.confirm_edit();
+        assert_eq!(app.mode, AppMode::Editing);
+        assert_ne!(
+            app.env_files[0].entries[0].key,
+            app.env_files[0].entries[1].key
+        );
     }
 
     #[test]

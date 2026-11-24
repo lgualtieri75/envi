@@ -4,7 +4,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState};
 use ratatui::Frame;
 
-use crate::app::{App, AppMode, Panel};
+use crate::app::{App, AppMode, EditField, Panel};
 use crate::env::diff::DiffKind;
 
 pub fn render_variables(frame: &mut Frame, app: &App, area: Rect) {
@@ -77,14 +77,32 @@ fn render_normal_view(frame: &mut Frame, app: &App, area: Rect, block: Block) {
             let is_selected = i == app.var_index;
             let is_search_match = search_set.contains(&i);
 
-            let value_display = if app.mode == AppMode::Editing && is_selected {
-                let buf = &app.edit_buffer;
+            let editing = app.mode == AppMode::Editing && is_selected;
+            let editing_key = editing && app.edit_field == EditField::Key;
+            let editing_value = editing && app.edit_field == EditField::Value;
+
+            let with_cursor = |buf: &str| {
                 let byte_cursor = buf
                     .char_indices()
                     .nth(app.edit_cursor)
                     .map(|(i, _)| i)
                     .unwrap_or(buf.len());
                 format!("{}|{}", &buf[..byte_cursor], &buf[byte_cursor..])
+            };
+
+            // While editing, show the pending key (buffer or stash) instead of the stored one.
+            let key_display = if editing_key {
+                with_cursor(&app.edit_buffer)
+            } else if editing_value {
+                app.edit_other.clone()
+            } else {
+                entry.key.clone()
+            };
+
+            let value_display = if editing_value {
+                with_cursor(&app.edit_buffer)
+            } else if editing_key {
+                app.edit_other.clone()
             } else if entry.is_encrypted {
                 "[encrypted]".to_string()
             } else if entry.value.chars().count() > 40 {
@@ -93,7 +111,9 @@ fn render_normal_view(frame: &mut Frame, app: &App, area: Rect, block: Block) {
                 entry.value.clone()
             };
 
-            let key_style = if is_selected {
+            let key_style = if editing_key {
+                Style::default().fg(Color::White).bg(Color::Rgb(40, 40, 60))
+            } else if is_selected {
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD)
@@ -103,7 +123,7 @@ fn render_normal_view(frame: &mut Frame, app: &App, area: Rect, block: Block) {
                 Style::default().fg(Color::Green)
             };
 
-            let value_style = if app.mode == AppMode::Editing && is_selected {
+            let value_style = if editing_value {
                 Style::default().fg(Color::White).bg(Color::Rgb(40, 40, 60))
             } else if entry.is_encrypted {
                 Style::default().fg(Color::Magenta)
@@ -117,7 +137,7 @@ fn render_normal_view(frame: &mut Frame, app: &App, area: Rect, block: Block) {
 
             ListItem::new(Line::from(vec![
                 Span::styled(prefix, Style::default().fg(Color::Cyan)),
-                Span::styled(format!("{:<20}", entry.key), key_style),
+                Span::styled(format!("{:<20}", key_display), key_style),
                 Span::styled(" = ", Style::default().fg(Color::DarkGray)),
                 Span::styled(value_display, value_style),
             ]))

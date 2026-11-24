@@ -79,7 +79,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 
     let shortcuts = match app.mode {
         AppMode::Normal => "[e]dit [d]iff [s]can [/]search [a]dd [x]del [w]rite [?]help [q]uit",
-        AppMode::Editing => "[Enter]confirm [Esc]cancel",
+        AppMode::Editing => "[Enter]next/confirm [Tab]key/value [Esc]cancel",
         AppMode::DiffView => "[Tab]cycle target [Esc]close",
         AppMode::ScanView => "[Esc]close",
         _ => "[Esc]close",

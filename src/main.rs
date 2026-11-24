@@ -169,7 +169,8 @@ fn handle_normal_key(app: &mut App, key: KeyCode, modifiers: KeyModifiers) {
 
 fn handle_edit_key(app: &mut App, key: KeyCode) {
     match key {
-        KeyCode::Enter => app.confirm_edit(),
+        KeyCode::Enter => app.edit_enter(),
+        KeyCode::Tab | KeyCode::BackTab => app.switch_edit_field(),
         KeyCode::Esc => app.cancel_edit(),
         KeyCode::Char(c) => app.edit_insert(c),
         KeyCode::Backspace => app.edit_backspace(),
